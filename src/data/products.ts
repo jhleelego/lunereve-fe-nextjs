@@ -40,6 +40,16 @@ export const products: Product[] = [
     imageAlt: "륀레브 비접착식 논슬립 타일 카페트",
   },
   {
+    id: "sno-4",
+    sno: 4,
+    name: "썬캐쳐",
+    description:
+      "햇빛을 받으면 아름다운 무지개빛을 내뿜는 크리스탈 모빌 썬캐쳐입니다. 창가에 걸어 두면 은은한 빛의 굴절로 공간에 포인트를 더하는 인테리어 소품입니다.",
+    details: ["크리스탈 모빌", "인테리어 장식", "12종"],
+    image: "/products/4/main.png",
+    imageAlt: "륀레브 썬캐쳐 크리스탈 모빌 인테리어 장식 12종",
+  },
+  {
     id: "sno-3",
     sno: 3,
     name: "접착식 애완매트",
