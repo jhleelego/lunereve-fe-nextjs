@@ -166,6 +166,77 @@ export function sizeLabel({ w, d, h }: ShelfSize): string {
   return `가로 ${w} × 세로 ${d} × 높이 ${h} + 천장`;
 }
 
+/** 홀더·바닥홀더 주문 묶음 단위 — 총량 4배수 */
+export const HOLDER_ORDER_MULTIPLE = 4;
+
+/** 홀더·바닥홀더 여유분 — 기본수량의 5%(올림), +2~+4, 총량 4배수 우선 */
+export const PERCENT_SPARE_RATIO = 0.05;
+export const PERCENT_SPARE_MIN = 2;
+export const PERCENT_SPARE_MAX = 4;
+
+function holderLikeSpareFromBase(base: number): number {
+  const b = Math.max(0, Math.floor(base));
+  const rawSpare = Math.min(
+    PERCENT_SPARE_MAX,
+    Math.max(PERCENT_SPARE_MIN, Math.ceil(b * PERCENT_SPARE_RATIO)),
+  );
+
+  const multipleCandidates: number[] = [];
+  for (let spare = PERCENT_SPARE_MIN; spare <= PERCENT_SPARE_MAX; spare += 1) {
+    if ((b + spare) % HOLDER_ORDER_MULTIPLE === 0) {
+      multipleCandidates.push(spare);
+    }
+  }
+  if (multipleCandidates.length > 0) {
+    return multipleCandidates.reduce((best, spare) =>
+      Math.abs(spare - rawSpare) < Math.abs(best - rawSpare) ? spare : best,
+    );
+  }
+
+  return rawSpare;
+}
+
+/** 홀더 여유분 */
+export function holderSpareFromBase(base: number): number {
+  return holderLikeSpareFromBase(base);
+}
+
+/** 바닥홀더 여유분 */
+export function floorHolderSpareFromBase(base: number): number {
+  return holderLikeSpareFromBase(base);
+}
+
+/** 케이블타이 주문 묶음 단위 — 총량 10배수 */
+export const CABLE_TIE_ORDER_MULTIPLE = 10;
+export const CABLE_TIE_SPARE_RATIO = 0.05;
+export const CABLE_TIE_SPARE_MIN = 10;
+export const CABLE_TIE_SPARE_MIN_LARGE = 20;
+export const CABLE_TIE_SPARE_LARGE_BASE_THRESHOLD = 100;
+
+function cableTieMinSpare(base: number): number {
+  return base >= CABLE_TIE_SPARE_LARGE_BASE_THRESHOLD
+    ? CABLE_TIE_SPARE_MIN_LARGE
+    : CABLE_TIE_SPARE_MIN;
+}
+
+/**
+ * 케이블타이 여유분 — 기본수량의 5%(올림), 최소 +10(기본 100↑는 +20), 총량 10배수 올림
+ *
+ * 1. spare = max(최소여유, ceil(기본 × 5%))
+ * 2. total = 기본 + spare 가 10배수가 되도록 spare 보정
+ */
+export function cableTieSpareFromBase(base: number): number {
+  const b = Math.max(0, Math.floor(base));
+  const minSpare = cableTieMinSpare(b);
+  const rawSpare = Math.max(minSpare, Math.ceil(b * CABLE_TIE_SPARE_RATIO));
+  let total = b + rawSpare;
+  const remainder = total % CABLE_TIE_ORDER_MULTIPLE;
+  if (remainder !== 0) {
+    total += CABLE_TIE_ORDER_MULTIPLE - remainder;
+  }
+  return total - b;
+}
+
 export function getSegmentFace(
   segment: Pick<FrameSegment, "axis" | "x1" | "y1" | "z1">,
   w: number,
@@ -699,49 +770,51 @@ export function calcAllShelves(): ShelfCalcResult[] {
   return listAllShelfSizes().map(calcShelf);
 }
 
-function roundUpToMultiple(value: number, multiple: number): number {
-  if (multiple <= 0) return value;
-  return Math.ceil(value / multiple) * multiple;
-}
-
-/** 주문 수량 반영 시 올림 배수 — 홀더·바닥홀더·걸쇠 4, 케이블타이 10 */
+/** 주문 수량 반영 시 묶음 단위 — 주문 수량 표(÷N) 표시용 */
 export const ORDER_QUANTITY_ROUND_MULTIPLE: Partial<
   Record<PartKind, number>
 > = {
-  holder: 4,
-  floorHolder: 4,
-  cableTie: 10,
+  holder: HOLDER_ORDER_MULTIPLE,
+  floorHolder: HOLDER_ORDER_MULTIPLE,
+  cableTie: CABLE_TIE_ORDER_MULTIPLE,
   latch: 4,
 };
 
-/** 주문 수량 반영 — 기본/커버/문은 ×수량, 홀더·바닥홀더·케이블타이·걸쇠는 여분·배수 규칙 적용 */
+/** 기본·주문 수량 여유분 — 걸쇠 +2 (홀더·바닥홀더·케이블타이는 각 규칙 참고) */
+export const ORDER_QUANTITY_SPARE: Partial<Record<PartKind, number>> = {
+  latch: 2,
+};
+
+export function getOrderQuantitySpare(
+  kind: PartKind,
+  baseQuantity = 0,
+): number {
+  if (kind === "holder") return holderSpareFromBase(baseQuantity);
+  if (kind === "floorHolder") return floorHolderSpareFromBase(baseQuantity);
+  if (kind === "cableTie") return cableTieSpareFromBase(baseQuantity);
+  return ORDER_QUANTITY_SPARE[kind] ?? 0;
+}
+
+/** 주문 수량 반영 — 기본/커버/문은 ×수량, 홀더·바닥홀더·케이블타이·걸쇠는 실제수량+여유분 */
 export function applyOrderQuantity(
   parts: ShelfParts,
   quantity: number,
 ): ShelfParts {
   const q = Math.max(1, Math.floor(quantity) || 1);
+  const holderBase = parts.holder * q;
+  const floorHolderBase = parts.floorHolder * q;
+  const cableTieBase = parts.cableTie * q;
 
   return {
     baseFrame: parts.baseFrame * q,
     coverFrame: parts.coverFrame * q,
     door: parts.door * q,
     fixedPin: parts.fixedPin * q,
-    holder: roundUpToMultiple(
-      parts.holder * q + 2,
-      ORDER_QUANTITY_ROUND_MULTIPLE.holder ?? 4,
-    ),
-    floorHolder: roundUpToMultiple(
-      parts.floorHolder * q + 2,
-      ORDER_QUANTITY_ROUND_MULTIPLE.floorHolder ?? 4,
-    ),
-    cableTie: roundUpToMultiple(
-      parts.cableTie * q + 9,
-      ORDER_QUANTITY_ROUND_MULTIPLE.cableTie ?? 10,
-    ),
-    latch: roundUpToMultiple(
-      parts.latch * q,
-      ORDER_QUANTITY_ROUND_MULTIPLE.latch ?? 4,
-    ),
+    holder: holderBase + getOrderQuantitySpare("holder", holderBase),
+    floorHolder:
+      floorHolderBase + getOrderQuantitySpare("floorHolder", floorHolderBase),
+    cableTie: cableTieBase + getOrderQuantitySpare("cableTie", cableTieBase),
+    latch: parts.door * q + getOrderQuantitySpare("latch"),
   };
 }
 
@@ -764,29 +837,24 @@ export function applyRowOrderMultiplier(
   };
 }
 
-/** 기본 테이블 표시 — 예: 8(6+2), 20(11+9), 4(2+2) */
+/** 기본 테이블 표시 — 예: 8(6+2), 21(11+10), 3(1+2) — 실제수량+여유분 */
 export function formatOrderQuantityPartDisplays(
   parts: ShelfParts,
   quantity: number,
 ): Record<PartKind, string> {
   const q = Math.max(1, Math.floor(quantity) || 1);
   const applied = applyOrderQuantity(parts, quantity);
+  const holderBase = parts.holder * q;
+  const floorHolderBase = parts.floorHolder * q;
+  const cableTieBase = parts.cableTie * q;
 
-  const holderScaled = parts.holder * q;
-  const floorScaled = parts.floorHolder * q;
-  const cableScaled = parts.cableTie * q;
-  const latchScaled = parts.latch * q;
-
-  const formatLatchDisplay = (): string => {
-    const result = applied.latch;
-    if (result > latchScaled) {
-      return `${result}(${latchScaled})`;
-    }
-    if (result % 2 === 0) {
-      const half = result / 2;
-      return `${result}(${half}+${half})`;
-    }
-    return String(result);
+  const formatWithFixedSpare = (
+    total: number,
+    base: number,
+    spare: number,
+  ): string => {
+    if (spare <= 0) return String(total);
+    return `${total}(${base}+${spare})`;
   };
 
   return {
@@ -794,9 +862,25 @@ export function formatOrderQuantityPartDisplays(
     coverFrame: String(applied.coverFrame),
     door: String(applied.door),
     fixedPin: String(applied.fixedPin),
-    holder: `${applied.holder}(${holderScaled}+2)`,
-    floorHolder: `${applied.floorHolder}(${floorScaled}+2)`,
-    cableTie: `${applied.cableTie}(${cableScaled}+9)`,
-    latch: formatLatchDisplay(),
+    holder: formatWithFixedSpare(
+      applied.holder,
+      holderBase,
+      getOrderQuantitySpare("holder", holderBase),
+    ),
+    floorHolder: formatWithFixedSpare(
+      applied.floorHolder,
+      floorHolderBase,
+      getOrderQuantitySpare("floorHolder", floorHolderBase),
+    ),
+    cableTie: formatWithFixedSpare(
+      applied.cableTie,
+      cableTieBase,
+      getOrderQuantitySpare("cableTie", cableTieBase),
+    ),
+    latch: formatWithFixedSpare(
+      applied.latch,
+      parts.door * q,
+      getOrderQuantitySpare("latch"),
+    ),
   };
 }

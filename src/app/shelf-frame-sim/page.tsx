@@ -2,6 +2,8 @@
 
 import { useCallback, useMemo, useState } from "react";
 import Modal from "@/components/common/Modal";
+import { SHELF_FRAME_SIM_ENABLED } from "@/config/features";
+import ShelfFrameSimAccessDenied from "./ShelfFrameSimAccessDenied";
 import {
   FACE_META,
   FACE_DISPLAY_ORDER,
@@ -13,7 +15,6 @@ import {
   type ShelfParts,
   calcAllShelves,
   calcShelf,
-  applyOrderQuantity,
   applyRowOrderMultiplier,
   formatOrderQuantityPartDisplays,
   ORDER_QUANTITY_ROUND_MULTIPLE,
@@ -433,14 +434,8 @@ function ShelfTableCopyButton({
   );
 }
 
-function getPartColumnHeaderLabel(
-  kind: PartKind,
-  showOrderMultiple: boolean,
-): string {
-  const label = PART_META[kind].label;
-  if (!showOrderMultiple) return label;
-  const multiple = ORDER_QUANTITY_ROUND_MULTIPLE[kind];
-  return multiple ? `${label}(x${multiple})` : label;
+function getPartColumnHeaderLabel(kind: PartKind): string {
+  return PART_META[kind].label;
 }
 
 const SHELF_WHITE_SECTION_BORDER = "border-l-2 border-l-blue-500";
@@ -1047,7 +1042,7 @@ function buildShelfSpecClipboardText(
     cells.map((cell) => String(cell)).join("\t");
 
   const basicPartHeaders = PART_DISPLAY_ORDER.map((kind) =>
-    getPartColumnHeaderLabel(kind, true),
+    getPartColumnHeaderLabel(kind),
   );
   const colorPartHeaders = PART_DISPLAY_ORDER.map(
     (kind) => PART_META[kind].label,
@@ -1056,11 +1051,11 @@ function buildShelfSpecClipboardText(
   const basicBlock = [
     toTsvRow(["NO", "규격", ...basicPartHeaders]),
     ...rows.map((row, index) => {
-      const applied = applyOrderQuantity(row.parts, 1);
+      const basicDisplay = formatOrderQuantityPartDisplays(row.parts, 1);
       return toTsvRow([
         index + 1,
         row.label,
-        ...PART_DISPLAY_ORDER.map((kind) => applied[kind]),
+        ...PART_DISPLAY_ORDER.map((kind) => basicDisplay[kind]),
       ]);
     }),
   ].join("\n");
@@ -1232,7 +1227,7 @@ function ShelfBasicSpecTable({
               key={`basic-${kind}`}
               className={`${SHELF_TABLE_NUM_CELL_CLASS} ${SHELF_BASIC_SECTION_HEAD_BG} text-right font-semibold whitespace-nowrap`}
             >
-              {getPartColumnHeaderLabel(kind, true)}
+              {getPartColumnHeaderLabel(kind)}
             </th>
           ))}
         </tr>
@@ -2274,6 +2269,14 @@ function SelectedShelfView({ result }: { result: ShelfCalcResult }) {
 }
 
 export default function ShelfFrameSimPage() {
+  if (!SHELF_FRAME_SIM_ENABLED) {
+    return <ShelfFrameSimAccessDenied />;
+  }
+
+  return <ShelfFrameSimContent />;
+}
+
+function ShelfFrameSimContent() {
   const allResults = useMemo(() => calcAllShelves(), []);
   const initialColorQuantities = useMemo(
     () => buildInitialColorQuantities(allResults),
