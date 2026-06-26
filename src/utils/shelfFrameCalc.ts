@@ -169,41 +169,56 @@ export function sizeLabel({ w, d, h }: ShelfSize): string {
 /** 홀더·바닥홀더 주문 묶음 단위 — 총량 4배수 */
 export const HOLDER_ORDER_MULTIPLE = 4;
 
-/** 홀더·바닥홀더 여유분 — 기본수량의 5%(올림), +2~+4, 총량 4배수 우선 */
+/** 홀더 여유분 — 기본수량의 5%(올림), +2~+8, 총량 4배수 우선 */
 export const PERCENT_SPARE_RATIO = 0.05;
-export const PERCENT_SPARE_MIN = 2;
-export const PERCENT_SPARE_MAX = 4;
+export const HOLDER_SPARE_MIN = 2;
+export const HOLDER_SPARE_MAX = 8;
+export const FLOOR_HOLDER_SPARE_MIN = 2;
+export const FLOOR_HOLDER_SPARE_MAX = 8;
 
-function holderLikeSpareFromBase(base: number): number {
+function holderLikeSpareFromBase(
+  base: number,
+  spareMin: number,
+  spareMax: number,
+): number {
   const b = Math.max(0, Math.floor(base));
   const rawSpare = Math.min(
-    PERCENT_SPARE_MAX,
-    Math.max(PERCENT_SPARE_MIN, Math.ceil(b * PERCENT_SPARE_RATIO)),
+    spareMax,
+    Math.max(spareMin, Math.ceil(b * PERCENT_SPARE_RATIO)),
   );
 
-  const multipleCandidates: number[] = [];
-  for (let spare = PERCENT_SPARE_MIN; spare <= PERCENT_SPARE_MAX; spare += 1) {
+  const inRangeCandidates: number[] = [];
+  for (let spare = spareMin; spare <= spareMax; spare += 1) {
     if ((b + spare) % HOLDER_ORDER_MULTIPLE === 0) {
-      multipleCandidates.push(spare);
+      inRangeCandidates.push(spare);
     }
   }
-  if (multipleCandidates.length > 0) {
-    return multipleCandidates.reduce((best, spare) =>
+  if (inRangeCandidates.length > 0) {
+    return inRangeCandidates.reduce((best, spare) =>
       Math.abs(spare - rawSpare) < Math.abs(best - rawSpare) ? spare : best,
     );
   }
 
-  return rawSpare;
+  let total = b + rawSpare;
+  const remainder = total % HOLDER_ORDER_MULTIPLE;
+  if (remainder !== 0) {
+    total += HOLDER_ORDER_MULTIPLE - remainder;
+  }
+  return total - b;
 }
 
 /** 홀더 여유분 */
 export function holderSpareFromBase(base: number): number {
-  return holderLikeSpareFromBase(base);
+  return holderLikeSpareFromBase(base, HOLDER_SPARE_MIN, HOLDER_SPARE_MAX);
 }
 
-/** 바닥홀더 여유분 */
+/** 바닥홀더 여유분 — +2~+8 */
 export function floorHolderSpareFromBase(base: number): number {
-  return holderLikeSpareFromBase(base);
+  return holderLikeSpareFromBase(
+    base,
+    FLOOR_HOLDER_SPARE_MIN,
+    FLOOR_HOLDER_SPARE_MAX,
+  );
 }
 
 /** 케이블타이 주문 묶음 단위 — 총량 10배수 */
@@ -233,6 +248,19 @@ export function cableTieSpareFromBase(base: number): number {
   const remainder = total % CABLE_TIE_ORDER_MULTIPLE;
   if (remainder !== 0) {
     total += CABLE_TIE_ORDER_MULTIPLE - remainder;
+  }
+  return total - b;
+}
+
+/** 걸쇠 여유분 — 기본 +2, 총량 4배수 올림 */
+export const LATCH_SPARE_MIN = 2;
+
+export function latchSpareFromBase(base: number): number {
+  const b = Math.max(0, Math.floor(base));
+  let total = b + LATCH_SPARE_MIN;
+  const remainder = total % HOLDER_ORDER_MULTIPLE;
+  if (remainder !== 0) {
+    total += HOLDER_ORDER_MULTIPLE - remainder;
   }
   return total - b;
 }
@@ -780,9 +808,9 @@ export const ORDER_QUANTITY_ROUND_MULTIPLE: Partial<
   latch: 4,
 };
 
-/** 기본·주문 수량 여유분 — 걸쇠 +2 (홀더·바닥홀더·케이블타이는 각 규칙 참고) */
+/** 기본·주문 수량 여유분 — 걸쇠는 latchSpareFromBase 참고 */
 export const ORDER_QUANTITY_SPARE: Partial<Record<PartKind, number>> = {
-  latch: 2,
+  latch: LATCH_SPARE_MIN,
 };
 
 export function getOrderQuantitySpare(
@@ -792,6 +820,7 @@ export function getOrderQuantitySpare(
   if (kind === "holder") return holderSpareFromBase(baseQuantity);
   if (kind === "floorHolder") return floorHolderSpareFromBase(baseQuantity);
   if (kind === "cableTie") return cableTieSpareFromBase(baseQuantity);
+  if (kind === "latch") return latchSpareFromBase(baseQuantity);
   return ORDER_QUANTITY_SPARE[kind] ?? 0;
 }
 
@@ -804,6 +833,7 @@ export function applyOrderQuantity(
   const holderBase = parts.holder * q;
   const floorHolderBase = parts.floorHolder * q;
   const cableTieBase = parts.cableTie * q;
+  const latchBase = parts.door * q;
 
   return {
     baseFrame: parts.baseFrame * q,
@@ -814,27 +844,16 @@ export function applyOrderQuantity(
     floorHolder:
       floorHolderBase + getOrderQuantitySpare("floorHolder", floorHolderBase),
     cableTie: cableTieBase + getOrderQuantitySpare("cableTie", cableTieBase),
-    latch: parts.door * q + getOrderQuantitySpare("latch"),
+    latch: latchBase + getOrderQuantitySpare("latch", latchBase),
   };
 }
 
-/** 화이트·블랙 — 수량 1 기준(여분·배수 반영) 값 × 행 수량 */
+/** 화이트·블랙 — 행 수량 반영(여유분은 합산 기본수량 기준) */
 export function applyRowOrderMultiplier(
   parts: ShelfParts,
   rowQuantity: number,
 ): ShelfParts {
-  const q = Math.max(1, Math.floor(rowQuantity) || 1);
-  const unit = applyOrderQuantity(parts, 1);
-  return {
-    baseFrame: unit.baseFrame * q,
-    coverFrame: unit.coverFrame * q,
-    holder: unit.holder * q,
-    floorHolder: unit.floorHolder * q,
-    fixedPin: unit.fixedPin * q,
-    cableTie: unit.cableTie * q,
-    door: unit.door * q,
-    latch: unit.latch * q,
-  };
+  return applyOrderQuantity(parts, rowQuantity);
 }
 
 /** 기본 테이블 표시 — 예: 8(6+2), 21(11+10), 3(1+2) — 실제수량+여유분 */
@@ -847,6 +866,7 @@ export function formatOrderQuantityPartDisplays(
   const holderBase = parts.holder * q;
   const floorHolderBase = parts.floorHolder * q;
   const cableTieBase = parts.cableTie * q;
+  const latchBase = parts.door * q;
 
   const formatWithFixedSpare = (
     total: number,
@@ -879,8 +899,8 @@ export function formatOrderQuantityPartDisplays(
     ),
     latch: formatWithFixedSpare(
       applied.latch,
-      parts.door * q,
-      getOrderQuantitySpare("latch"),
+      latchBase,
+      getOrderQuantitySpare("latch", latchBase),
     ),
   };
 }
